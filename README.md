@@ -2,7 +2,7 @@
 
 # ⬇️ AVI Downloader
 
-### The Ultimate Free Video Downloader — Built for 2027
+### The Ultimate Free Video Downloader — Built for EveryOne
 
 [![MIT License](https://img.shields.io/badge/License-MIT-14b897?style=for-the-badge)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
