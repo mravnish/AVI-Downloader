@@ -7,7 +7,8 @@ const AuthCtx = createContext({
   updateProfile: () => {}, countDownload: () => {},
 })
 
-const API = '/api/auth'
+// const API = '/api/auth'
+const API = (import.meta.env.VITE_API_URL || '/api') + '/auth'
 
 async function apiFetch(url, options = {}) {
   const res  = await fetch(url, {
