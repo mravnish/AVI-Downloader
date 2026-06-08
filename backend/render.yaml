@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: avi-downloader
+    env: node
+    rootDir: backend
+    buildCommand: npm install && pip3 install -U yt-dlp
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000

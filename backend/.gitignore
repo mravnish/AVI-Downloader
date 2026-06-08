@@ -1,5 +1,0 @@
-node_modules/
-.env
-data/users.json
-data/submissions.json
-data/stats.json

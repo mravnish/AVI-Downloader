@@ -1,15 +1,21 @@
 'use strict';
+
 require('dotenv').config();
 
-/* ── Prevent ECONNRESET / nodemailer errors from killing the process ── */
+/* ──────────────────────────────────────────────
+   Global Error Protection
+────────────────────────────────────────────── */
 process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err.message);
+  console.error('[uncaughtException]', err);
 });
 
-process.on('unhandledRejection', (err) => {
-  console.error('[unhandledRejection]', err?.message || err);
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
 });
 
+/* ──────────────────────────────────────────────
+   Imports
+────────────────────────────────────────────── */
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -26,297 +32,118 @@ const audioRoutes = require('./routes/audio');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-/* ── Security ── */
+/* ──────────────────────────────────────────────
+   Trust Proxy (Render / Railway / VPS)
+────────────────────────────────────────────── */
+app.set('trust proxy', 1);
+
+/* ──────────────────────────────────────────────
+   Security
+────────────────────────────────────────────── */
 app.use(
   helmet({
     crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginResourcePolicy: {
+      policy: 'cross-origin',
+    },
   })
 );
+
+/* ──────────────────────────────────────────────
+   CORS
+────────────────────────────────────────────── */
+const allowedOrigins = [
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
 
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('CORS blocked'));
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
 
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
+/* ──────────────────────────────────────────────
+   Body Parsers
+────────────────────────────────────────────── */
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-/* ── Global rate limit ── */
-app.use(
-  '/api/',
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 500,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.path === '/auth/me',
-    message: {
-      success: false,
-      error: 'Too many requests. Please wait a moment.',
-    },
-  })
-);
-
-/* ── Login rate limit ── */
-app.use(
-  '/api/auth/login',
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 20,
-    message: {
-      success: false,
-      error: 'Too many login attempts. Please wait 15 minutes.',
-    },
-  })
-);
-
-/* ── OTP rate limit ── */
-app.use(
-  '/api/auth/send-otp',
-  rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 10,
-    message: {
-      success: false,
-      error: 'Too many OTP requests. Please wait an hour.',
-    },
-  })
-);
-
-/* =========================================================
-   ROOT BACKEND UI
-========================================================= */
-app.get('/', (_req, res) => {
-  const version = require('./package.json').version;
-
-  res.send(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-
-<title>AVI Multi Downloader API</title>
-
-<style>
-*{
-  margin:0;
-  padding:0;
-  box-sizing:border-box;
-}
-
-body{
-  font-family:Segoe UI,Tahoma,Geneva,Verdana,sans-serif;
-  background:#0f172a;
-  color:#fff;
-  min-height:100vh;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  padding:20px;
-}
-
-.container{
-  width:100%;
-  max-width:900px;
-}
-
-.card{
-  background:#1e293b;
-  border-radius:20px;
-  padding:40px;
-  box-shadow:0 0 30px rgba(0,0,0,.4);
-}
-
-h1{
-  text-align:center;
-  margin-bottom:10px;
-  font-size:2.5rem;
-}
-
-.subtitle{
-  text-align:center;
-  color:#94a3b8;
-  margin-bottom:30px;
-}
-
-.status{
-  text-align:center;
-  margin-bottom:25px;
-}
-
-.badge{
-  display:inline-block;
-  background:#16a34a;
-  color:white;
-  padding:8px 16px;
-  border-radius:50px;
-  font-weight:bold;
-}
-
-.info-grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
-  gap:15px;
-  margin-bottom:30px;
-}
-
-.info-box{
-  background:#334155;
-  padding:15px;
-  border-radius:12px;
-}
-
-.info-box h3{
-  margin-bottom:10px;
-  color:#38bdf8;
-}
-
-.endpoints{
-  margin-top:20px;
-}
-
-.endpoint{
-  background:#0f172a;
-  padding:12px 15px;
-  margin-bottom:10px;
-  border-radius:10px;
-  display:flex;
-  justify-content:space-between;
-  flex-wrap:wrap;
-}
-
-.endpoint a{
-  color:#38bdf8;
-  text-decoration:none;
-}
-
-.footer{
-  text-align:center;
-  margin-top:25px;
-  color:#94a3b8;
-}
-
-@media(max-width:600px){
-  h1{
-    font-size:1.8rem;
-  }
-
-  .card{
-    padding:25px;
-  }
-}
-</style>
-</head>
-
-<body>
-
-<div class="container">
-
-  <div class="card">
-
-    <h1>🚀 AVI Multi Downloader API</h1>
-
-    <p class="subtitle">
-      Backend Server Running Successfully
-    </p>
-
-    <div class="status">
-      <span class="badge">✅ ONLINE</span>
-    </div>
-
-    <div class="info-grid">
-
-      <div class="info-box">
-        <h3>Version</h3>
-        <p>${version}</p>
-      </div>
-
-      <div class="info-box">
-        <h3>Environment</h3>
-        <p>${process.env.NODE_ENV || 'development'}</p>
-      </div>
-
-      <div class="info-box">
-        <h3>Uptime</h3>
-        <p>${Math.floor(process.uptime())} sec</p>
-      </div>
-
-      <div class="info-box">
-        <h3>Server Time</h3>
-        <p>${new Date().toLocaleString()}</p>
-      </div>
-
-    </div>
-
-    <div class="endpoints">
-
-      <h2 style="margin-bottom:15px;">
-        Available API Endpoints
-      </h2>
-
-      <div class="endpoint">
-        <span>Health Check</span>
-        <a href="/api/health" target="_blank">
-          /api/health
-        </a>
-      </div>
-
-      <div class="endpoint">
-        <span>Authentication</span>
-        <span>/api/auth</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Playlist</span>
-        <span>/api/playlist</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Download</span>
-        <span>/api/download</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Audio</span>
-        <span>/api/audio</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Social</span>
-        <span>/api/social</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Submissions</span>
-        <span>/api/submissions</span>
-      </div>
-
-      <div class="endpoint">
-        <span>Admin</span>
-        <span>/api/admin</span>
-      </div>
-
-    </div>
-
-    <div class="footer">
-      AVI Multi Downloader Backend © ${new Date().getFullYear()}
-    </div>
-
-  </div>
-
-</div>
-
-</body>
-</html>
-`);
+/* ──────────────────────────────────────────────
+   Global Rate Limit
+────────────────────────────────────────────── */
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many requests. Please try again later.',
+  },
 });
 
-/* ── API Routes ── */
+app.use('/api', apiLimiter);
+
+/* ──────────────────────────────────────────────
+   Login Protection
+────────────────────────────────────────────── */
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many login attempts. Try again later.',
+  },
+});
+
+app.use('/api/auth/login', loginLimiter);
+
+/* ──────────────────────────────────────────────
+   OTP Protection
+────────────────────────────────────────────── */
+const otpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many OTP requests. Please wait.',
+  },
+});
+
+app.use('/api/auth/send-otp', otpLimiter);
+
+/* ──────────────────────────────────────────────
+   Health Check
+────────────────────────────────────────────── */
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({
+    success: true,
+    status: 'online',
+    version: require('./package.json').version,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
+/* ──────────────────────────────────────────────
+   Routes
+────────────────────────────────────────────── */
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/social', socialRoutes);
@@ -325,50 +152,185 @@ app.use('/api/submissions', submissionsRoutes);
 app.use('/api/playlist', playlistRoutes);
 app.use('/api/download', downloadRoutes);
 
-/* ── Health ── */
-app.get('/api/health', (_req, res) => {
+/* ──────────────────────────────────────────────
+   API Info
+────────────────────────────────────────────── */
+app.get('/api', (_req, res) => {
   res.json({
     success: true,
-    status: 'ok',
+    name: 'AVI Downloader API',
     version: require('./package.json').version,
-    uptime: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
+    endpoints: {
+      auth: '/api/auth',
+      playlist: '/api/playlist',
+      download: '/api/download',
+      audio: '/api/audio',
+      social: '/api/social',
+      admin: '/api/admin',
+      submissions: '/api/submissions',
+      health: '/api/health',
+    },
   });
 });
 
-/* ── 404 ── */
-app.use((_req, res) => {
+/* ──────────────────────────────────────────────
+   404 Handler
+────────────────────────────────────────────── */
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'Route not found.',
+    path: req.originalUrl,
   });
 });
 
-/* ── Global Error Handler ── */
-app.use((err, _req, res, _next) => {
-  console.error('[Server Error]', err.message);
+/* ──────────────────────────────────────────────
+   Error Handler
+────────────────────────────────────────────── */
+app.use((err, req, res, next) => {
+  console.error('[SERVER ERROR]', err);
 
   res.status(err.status || 500).json({
     success: false,
-    error: err.message || 'Internal server error.',
+    error:
+      process.env.NODE_ENV === 'production'
+        ? 'Internal server error.'
+        : err.message,
   });
 });
 
-/* ── Start Server ── */
-app.listen(PORT, () => {
-  console.log(`\n🚀 AVI Backend → http://localhost:${PORT}`);
+/* ──────────────────────────────────────────────
+   Start Server
+────────────────────────────────────────────── */
+const server = app.listen(PORT, () => {
+  console.log('\n================================');
+  console.log('🚀 AVI Downloader Backend');
+  console.log('================================');
+  console.log(`PORT       : ${PORT}`);
+  console.log(`MODE       : ${process.env.NODE_ENV || 'development'}`);
   console.log(
-    `Frontend → ${process.env.FRONTEND_URL || 'http://localhost:5173'}`
-  );
-  console.log(
-    `Email → ${
-      process.env.GMAIL_USER ||
-      '⚠️ GMAIL_USER not set in .env'
+    `FRONTEND   : ${
+      process.env.FRONTEND_URL || 'http://localhost:5173'
     }`
   );
-  console.log(
-    `Mode → ${process.env.NODE_ENV || 'development'}\n`
-  );
+  console.log(`EMAIL      : ${process.env.GMAIL_USER || 'Not Configured'}`);
+  console.log(`HEALTH URL : /api/health`);
+  console.log('================================\n');
+});
+
+/* ──────────────────────────────────────────────
+   Graceful Shutdown
+────────────────────────────────────────────── */
+process.on('SIGINT', () => {
+  console.log('\nShutting down server...');
+  server.close(() => {
+    console.log('Server stopped.');
+    process.exit(0);
+  });
 });
 
 module.exports = app;
+
+
+
+// 'use strict';
+// require('dotenv').config();
+
+// /* ── Prevent ECONNRESET / nodemailer errors from killing the process ── */
+// process.on('uncaughtException',  (err) => console.error('[uncaughtException]',  err.message));
+// process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err?.message || err));
+
+// const express   = require('express');
+// const cors      = require('cors');
+// const helmet    = require('helmet');
+// const rateLimit = require('express-rate-limit');
+
+// const playlistRoutes    = require('./routes/playlist');
+// const downloadRoutes    = require('./routes/download');
+// const authRoutes        = require('./routes/auth');
+// const adminRoutes       = require('./routes/admin');
+// const socialRoutes      = require('./routes/social');
+// const submissionsRoutes = require('./routes/submissions');
+// const audioRoutes       = require('./routes/audio');
+
+// const app  = express();
+// const PORT = process.env.PORT || 5000;
+
+// /* ── Security ── */
+// app.use(helmet({
+//   crossOriginEmbedderPolicy : false,
+//   crossOriginResourcePolicy : { policy: 'cross-origin' },
+// }));
+
+// app.use(cors({
+//   origin     : process.env.FRONTEND_URL || 'http://localhost:5173',
+//   methods    : ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+//   credentials: true,
+// }));
+
+// app.use(express.json({ limit: '1mb' }));
+// app.use(express.urlencoded({ extended: false }));
+
+// /* ── Global rate limit — generous for normal use ── */
+// app.use('/api/', rateLimit({
+//   windowMs       : 15 * 60 * 1000,  // 15 minutes
+//   max            : 500,              // 500 requests per 15 min per IP (was 120 — too tight)
+//   standardHeaders: true,
+//   legacyHeaders  : false,
+//   skip           : (req) => req.path === '/auth/me', // never rate-limit session restore
+//   message        : { success: false, error: 'Too many requests. Please wait a moment.' },
+// }));
+
+// /* ── Auth actions limit (login/register) — prevent brute force ── */
+// app.use('/api/auth/login', rateLimit({
+//   windowMs: 15 * 60 * 1000,   // 15 minutes
+//   max     : 20,                // 20 login attempts per 15 min (was part of 120 global)
+//   message : { success: false, error: 'Too many login attempts. Please wait 15 minutes.' },
+// }));
+
+// /* ── OTP send limit — prevent email spam ── */
+// app.use('/api/auth/send-otp', rateLimit({
+//   windowMs: 60 * 60 * 1000,   // 1 hour
+//   max     : 10,                // 10 OTP requests per hour (was 5 — too strict for dev)
+//   message : { success: false, error: 'Too many OTP requests. Please wait an hour.' },
+// }));
+
+// /* ── Routes ── */
+// app.use('/api/auth',        authRoutes);
+// app.use('/api/admin',       adminRoutes);
+// app.use('/api/social',      socialRoutes);
+// app.use('/api/audio',       audioRoutes);
+// app.use('/api/submissions', submissionsRoutes);
+// app.use('/api/playlist',    playlistRoutes);
+// app.use('/api/download',    downloadRoutes);
+
+// /* ── Health ── */
+// app.get('/api/health', (_req, res) => {
+//   res.json({
+//     success  : true,
+//     status   : 'ok',
+//     version  : require('./package.json').version,
+//     uptime   : Math.floor(process.uptime()),
+//     timestamp: new Date().toISOString(),
+//   });
+// });
+
+// /* ── 404 ── */
+// app.use((_req, res) => {
+//   res.status(404).json({ success: false, error: 'Route not found.' });
+// });
+
+// /* ── Global error handler ── */
+// app.use((err, _req, res, _next) => {
+//   console.error('[Server Error]', err.message);
+//   res.status(err.status || 500).json({ success: false, error: err.message || 'Internal server error.' });
+// });
+
+// app.listen(PORT, () => {
+//   console.log(`\n🚀  AVI Backend  →  http://localhost:${PORT}`);
+//   console.log(`    Frontend     →  ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
+//   console.log(`    Email        →  ${process.env.GMAIL_USER || '⚠️  GMAIL_USER not set in .env'}`);
+//   console.log(`    Mode         →  ${process.env.NODE_ENV || 'development'}\n`);
+// });
+
+// module.exports = app;
