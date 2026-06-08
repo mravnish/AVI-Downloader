@@ -71,6 +71,189 @@ app.use('/api/submissions', submissionsRoutes);
 app.use('/api/playlist',    playlistRoutes);
 app.use('/api/download',    downloadRoutes);
 
+
+
+/* ── Backend Landing Page ── */
+app.get('/', (_req, res) => {
+  const version = require('./package.json').version;
+
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AVI Downloader API</title>
+
+<style>
+:root{
+  --bg:#0b1120;
+  --card:#111827;
+  --border:#1f2937;
+  --primary:#06b6d4;
+  --text:#f8fafc;
+  --muted:#94a3b8;
+}
+
+*{
+  margin:0;
+  padding:0;
+  box-sizing:border-box;
+}
+
+body{
+  font-family:Inter,Segoe UI,sans-serif;
+  background:linear-gradient(135deg,#020617,#0f172a);
+  color:var(--text);
+  min-height:100vh;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  padding:24px;
+}
+
+.container{
+  width:100%;
+  max-width:950px;
+}
+
+.card{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:24px;
+  padding:40px;
+  box-shadow:0 25px 60px rgba(0,0,0,.4);
+}
+
+.logo{
+  font-size:60px;
+  text-align:center;
+  margin-bottom:10px;
+}
+
+h1{
+  text-align:center;
+  margin-bottom:10px;
+}
+
+.subtitle{
+  text-align:center;
+  color:var(--muted);
+  margin-bottom:35px;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:16px;
+}
+
+.box{
+  background:#0f172a;
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:18px;
+}
+
+.box h3{
+  color:var(--primary);
+  margin-bottom:8px;
+}
+
+.actions{
+  display:flex;
+  gap:12px;
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:30px;
+}
+
+.btn{
+  background:var(--primary);
+  color:#001018;
+  text-decoration:none;
+  padding:12px 18px;
+  border-radius:12px;
+  font-weight:700;
+}
+
+.btn-outline{
+  border:1px solid var(--border);
+  color:white;
+  text-decoration:none;
+  padding:12px 18px;
+  border-radius:12px;
+}
+
+.footer{
+  text-align:center;
+  color:var(--muted);
+  margin-top:25px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+  <div class="card">
+
+    <div class="logo">🚀</div>
+
+    <h1>AVI Downloader API</h1>
+
+    <p class="subtitle">
+      Production Backend Service Running Successfully
+    </p>
+
+    <div class="grid">
+
+      <div class="box">
+        <h3>Status</h3>
+        <p>🟢 Online</p>
+      </div>
+
+      <div class="box">
+        <h3>Version</h3>
+        <p>${version}</p>
+      </div>
+
+      <div class="box">
+        <h3>Environment</h3>
+        <p>${process.env.NODE_ENV || 'development'}</p>
+      </div>
+
+      <div class="box">
+        <h3>Uptime</h3>
+        <p>${Math.floor(process.uptime())} sec</p>
+      </div>
+
+    </div>
+
+    <div class="actions">
+
+      <a href="/api/health" class="btn">
+        Health Check
+      </a>
+
+      <a href="${process.env.FRONTEND_URL || '#'}" class="btn-outline">
+        Open Frontend
+      </a>
+
+    </div>
+
+    <div class="footer">
+      AVI Downloader Backend © ${new Date().getFullYear()}
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
+  `);
+});
+
 /* ── Health ── */
 app.get('/api/health', (_req, res) => {
   res.json({
