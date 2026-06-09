@@ -26,14 +26,52 @@ const SALT_ROUNDS = 10;
 /* ── In-memory OTP store: { email → { otp, expiresAt, name, password } } ── */
 const otpStore = new Map();
 
-/* ── Gmail transporter — FREE unlimited via App Password ── */
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,   // your Gmail address
-    pass: process.env.GMAIL_PASS,   // Gmail App Password (16-char, not your login password)
-  },
-});
+/* ── Gmail transporter — created ONCE safely ── */
+let _transporter = null;
+
+function getTransporter() {
+  if (_transporter) return _transporter;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_PASS;
+  if (!user || !pass || pass.includes('xxxx')) {
+    console.warn('[Email] Gmail not configured — OTP will be logged to console only');
+    return null;
+  }
+  try {
+    _transporter = nodemailer.createTransport({
+      host  : 'smtp.gmail.com',
+      port  : 465,
+      secure: true,
+      auth  : { user, pass },
+      tls   : { rejectUnauthorized: false },
+      connectionTimeout: 15000,
+      greetingTimeout  : 15000,
+      socketTimeout    : 15000,
+    });
+    return _transporter;
+  } catch (e) {
+    console.error('[Email] Failed to create transporter:', e.message);
+    return null;
+  }
+}
+
+/* Send email safely — NEVER throws, NEVER crashes server */
+async function sendEmailSafe(options) {
+  const t = getTransporter();
+  if (!t) {
+    console.log('[Email] No transporter — OTP for', options.to, ':', options._otp || '(see OTP store)');
+    return false;
+  }
+  try {
+    await t.sendMail(options);
+    console.log('[Email] Sent to:', options.to);
+    return true;
+  } catch (err) {
+    console.error('[Email] Failed:', err.message);
+    _transporter = null; // reset so next request retries
+    return false;
+  }
+}
 
 /* ── User DB helpers (JSON file) ── */
 function loadUsers() {
@@ -148,7 +186,7 @@ const sendOtp = async (req, res, next) => {
     const otp        = genOtp();
     const hashedPass = await bcrypt.hash(password, SALT_ROUNDS);
 
-    /* Store OTP server-side (not sent to client) */
+    /* Store OTP server-side */
     otpStore.set(cleanEmail, {
       otp,
       expiresAt : Date.now() + OTP_EXPIRY,
@@ -156,27 +194,28 @@ const sendOtp = async (req, res, next) => {
       password  : hashedPass,
     });
 
-    /* Send real email via Gmail */
-    const transporter = createTransporter();
-    await transporter.sendMail({
+    console.log(`[Auth] OTP for ${cleanEmail}: ${otp}`); // always log for debugging
+
+    /* ── RESPOND IMMEDIATELY — don't wait for email ── */
+    res.json({
+      success : true,
+      message : `OTP sent to ${cleanEmail}. Check your inbox (and spam folder).`,
+    });
+
+    /* Send email in background — if it fails, OTP is still valid in memory */
+    sendEmailSafe({
       from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
       to      : cleanEmail,
       subject : `${otp} is your AVI Downloader verification code`,
       html    : otpEmailHtml(name.trim(), otp),
       text    : `Your AVI Downloader OTP is: ${otp}\n\nValid for 10 minutes.\n\nIf you didn't request this, ignore this email.`,
-    });
-
-    console.log(`[Auth] OTP sent to ${cleanEmail}`);
-
-    res.json({
-      success : true,
-      message : `OTP sent to ${cleanEmail}. Check your inbox (and spam folder).`,
+      _otp    : otp,
     });
   } catch (err) {
     console.error('[sendOtp error]', err.message);
-    if (err.code === 'EAUTH')
-      return res.status(500).json({ success: false, error: 'Email configuration error. Check GMAIL_USER and GMAIL_PASS in .env' });
-    next(err);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Server error. Please try again.' });
+    }
   }
 };
 
@@ -256,16 +295,20 @@ const resendOtp = async (req, res, next) => {
     const newOtp = genOtp();
     otpStore.set(cleanEmail, { ...stored, otp: newOtp, expiresAt: Date.now() + OTP_EXPIRY });
 
-    const transporter = createTransporter();
-    await transporter.sendMail({
+    console.log(`[Auth] Resend OTP for ${cleanEmail}: ${newOtp}`);
+
+    /* Respond immediately */
+    res.json({ success: true, message: 'New OTP sent to your email.' });
+
+    /* Send email in background */
+    sendEmailSafe({
       from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
       to      : cleanEmail,
       subject : `${newOtp} is your new AVI Downloader OTP`,
       html    : otpEmailHtml(stored.name, newOtp),
       text    : `Your new AVI Downloader OTP is: ${newOtp}\n\nValid for 10 minutes.`,
+      _otp    : newOtp,
     });
-
-    res.json({ success: true, message: 'New OTP sent to your email.' });
   } catch (err) {
     next(err);
   }
@@ -394,3 +437,4 @@ const countDownload = (req, res) => {
 };
 
 module.exports = { sendOtp, verifyOtp, resendOtp, login, getMe, getAllUsers, updateProfile, countDownload };
+
