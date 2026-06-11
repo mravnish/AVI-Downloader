@@ -3,7 +3,7 @@ services:
     name: avi-downloader
     env: node
     rootDir: backend
-    buildCommand: npm install && pip3 install -U yt-dlp
+    buildCommand: npm install && python3 -m pip install --upgrade pip && python3 -m pip install yt-dlp
     startCommand: node server.js
     envVars:
       - key: NODE_ENV

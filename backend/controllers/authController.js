@@ -26,33 +26,66 @@ const SALT_ROUNDS = 10;
 /* ── In-memory OTP store: { email → { otp, expiresAt, name, password } } ── */
 const otpStore = new Map();
 
-/* ── Gmail transporter — created ONCE safely ── */
+/* ── Email transporter — uses Brevo SMTP (free, works on Render) ──
+   Brevo (formerly Sendinblue): free 300 emails/day, no port blocking
+   Set these in Render env vars:
+     BREVO_USER = your Brevo login email
+     BREVO_PASS = your Brevo SMTP key (from Brevo dashboard → SMTP & API)
+   Fallback: Gmail on port 587 (TLS) if Brevo not configured
+── */
 let _transporter = null;
 
 function getTransporter() {
   if (_transporter) return _transporter;
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_PASS;
-  if (!user || !pass || pass.includes('xxxx')) {
-    console.warn('[Email] Gmail not configured — OTP will be logged to console only');
-    return null;
+
+  /* Option 1: Brevo SMTP (recommended for Render) */
+  const brevoUser = process.env.BREVO_USER;
+  const brevoPass = process.env.BREVO_PASS;
+  if (brevoUser && brevoPass && !brevoPass.includes('xxxx')) {
+    try {
+      _transporter = nodemailer.createTransport({
+        host  : 'smtp-relay.brevo.com',
+        port  : 587,
+        secure: false,
+        auth  : { user: brevoUser, pass: brevoPass },
+        tls   : { rejectUnauthorized: false },
+        connectionTimeout: 20000,
+        greetingTimeout  : 20000,
+        socketTimeout    : 20000,
+      });
+      console.log('[Email] Using Brevo SMTP');
+      return _transporter;
+    } catch (e) {
+      console.error('[Email] Brevo init failed:', e.message);
+      _transporter = null;
+    }
   }
-  try {
-    _transporter = nodemailer.createTransport({
-      host  : 'smtp.gmail.com',
-      port  : 465,
-      secure: true,
-      auth  : { user, pass },
-      tls   : { rejectUnauthorized: false },
-      connectionTimeout: 15000,
-      greetingTimeout  : 15000,
-      socketTimeout    : 15000,
-    });
-    return _transporter;
-  } catch (e) {
-    console.error('[Email] Failed to create transporter:', e.message);
-    return null;
+
+  /* Option 2: Gmail port 587 (TLS) — may work on some Render regions */
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_PASS;
+  if (gmailUser && gmailPass && !gmailPass.includes('xxxx')) {
+    try {
+      _transporter = nodemailer.createTransport({
+        host  : 'smtp.gmail.com',
+        port  : 587,
+        secure: false,
+        auth  : { user: gmailUser, pass: gmailPass },
+        tls   : { rejectUnauthorized: false },
+        connectionTimeout: 20000,
+        greetingTimeout  : 20000,
+        socketTimeout    : 20000,
+      });
+      console.log('[Email] Using Gmail SMTP port 587');
+      return _transporter;
+    } catch (e) {
+      console.error('[Email] Gmail init failed:', e.message);
+      _transporter = null;
+    }
   }
+
+  console.warn('[Email] No email provider configured — OTP logged to console only');
+  return null;
 }
 
 /* Send email safely — NEVER throws, NEVER crashes server */
@@ -68,7 +101,7 @@ async function sendEmailSafe(options) {
     return true;
   } catch (err) {
     console.error('[Email] Failed:', err.message);
-    _transporter = null; // reset so next request retries
+    _transporter = null; // reset for next attempt
     return false;
   }
 }
@@ -437,4 +470,3 @@ const countDownload = (req, res) => {
 };
 
 module.exports = { sendOtp, verifyOtp, resendOtp, login, getMe, getAllUsers, updateProfile, countDownload };
-
