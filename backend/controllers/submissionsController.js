@@ -23,55 +23,44 @@ const jwt        = require('jsonwebtoken');
 const FILE        = path.join(__dirname, '../data/submissions.json');
 const JWT_SECRET  = process.env.JWT_SECRET  || 'avi-super-secret-change-in-production';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'avikumar7630@gmail.com';
-const GMAIL_USER  = process.env.GMAIL_USER;
-const GMAIL_PASS  = process.env.GMAIL_PASS;
 
-/* ── Create transporter ONCE, safely ── */
-let transporter = null;
+/* ── Email via Brevo HTTP API (port 443 — never blocked on Render) ──
+   Set BREVO_API_KEY in Render env vars. See authController.js for setup steps. ── */
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const SENDER_EMAIL  = process.env.GMAIL_USER || ADMIN_EMAIL;
+const SENDER_NAME   = 'AVI Downloader';
 
-function initTransporter() {
-  if (!GMAIL_USER || !GMAIL_PASS || GMAIL_PASS.includes('xxxx')) {
-    console.warn('[Submissions] Gmail not configured — emails disabled. Set GMAIL_USER and GMAIL_PASS in .env');
-    return null;
-  }
-  try {
-    const nodemailer = require('nodemailer');
-    const t = nodemailer.createTransport({
-      service: 'gmail',
-      auth   : { user: GMAIL_USER, pass: GMAIL_PASS },
-      // Important: don't let nodemailer throw unhandled errors
-      pool   : false,
-      logger : false,
-      debug  : false,
-    });
-    // Verify connection once at startup (non-blocking)
-    t.verify((err) => {
-      if (err) console.warn('[Email] Gmail SMTP verify failed:', err.message, '— emails will be skipped.');
-      else     console.log('[Email] Gmail SMTP ready ✓');
-    });
-    return t;
-  } catch (e) {
-    console.warn('[Submissions] Failed to init nodemailer:', e.message);
-    return null;
-  }
-}
-
-// Initialise once on module load
-transporter = initTransporter();
-
-/* ── Safe email sender — NEVER throws, NEVER crashes server ── */
-async function sendEmailSafe(options) {
-  if (!transporter) {
-    console.log('[Email] Skipped (not configured):', options.subject);
+/* Send email safely — NEVER throws, NEVER crashes server */
+async function sendEmailSafe({ to, subject, html, text }) {
+  if (!BREVO_API_KEY || BREVO_API_KEY.includes('xxxx')) {
+    console.log('[Email] BREVO_API_KEY not set — skipped:', subject);
     return false;
   }
   try {
-    await transporter.sendMail(options);
-    console.log('[Email] Sent:', options.subject);
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method : 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept'      : 'application/json',
+        'api-key'     : BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender     : { name: SENDER_NAME, email: SENDER_EMAIL },
+        to         : [{ email: to }],
+        subject,
+        htmlContent: html,
+        textContent: text,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('[Email] Brevo API error:', res.status, body.slice(0, 300));
+      return false;
+    }
+    console.log('[Email] Sent via Brevo API:', subject);
     return true;
   } catch (err) {
-    // Log but do NOT rethrow — submission was already saved
-    console.warn('[Email] Failed to send:', err.message);
+    console.error('[Email] Brevo API request failed:', err.message);
     return false;
   }
 }
@@ -201,7 +190,6 @@ const submitContact = async (req, res) => {
 
     // 3. Send email in background (after response sent — cannot crash the user's request)
     sendEmailSafe({
-      from   : `"AVI Downloader" <${GMAIL_USER}>`,
       to     : ADMIN_EMAIL,
       subject: `📬 New Contact: ${entry.subject}`,
       html   : contactHtml(entry),
@@ -253,7 +241,6 @@ const submitBug = async (req, res) => {
 
     // 3. Email in background
     sendEmailSafe({
-      from   : `"AVI Downloader" <${GMAIL_USER}>`,
       to     : ADMIN_EMAIL,
       subject: `🐛 New Bug Report: ${entry.title}`,
       html   : bugHtml(entry),

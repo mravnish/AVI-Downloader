@@ -9,7 +9,6 @@
  * - Users stored in JSON file (no database needed)
  */
 
-const nodemailer = require('nodemailer');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const fs         = require('fs');
@@ -26,14 +25,59 @@ const SALT_ROUNDS = 10;
 /* ── In-memory OTP store: { email → { otp, expiresAt, name, password } } ── */
 const otpStore = new Map();
 
-/* ── Gmail transporter — FREE unlimited via App Password ── */
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,   // your Gmail address
-    pass: process.env.GMAIL_PASS,   // Gmail App Password (16-char, not your login password)
-  },
-});
+/* ── Email via Brevo HTTP API ──
+   Why HTTP API instead of SMTP:
+   Render free tier blocks ALL outbound SMTP ports (25, 587, 2525, 465).
+   Brevo's HTTP API uses HTTPS (port 443) — never blocked anywhere.
+
+   Setup (2 minutes):
+     1. Go to https://app.brevo.com → Sign up free (300 emails/day)
+     2. Go to Settings → SMTP & API → API Keys tab
+     3. Click "Generate a new API key" → copy it
+     4. Set in Render env vars:
+          BREVO_API_KEY = your-api-key-here
+          ADMIN_EMAIL   = avikumar7630@gmail.com   (sender + admin notify address)
+── */
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const SENDER_EMAIL  = process.env.GMAIL_USER || process.env.ADMIN_EMAIL || 'no-reply@avidownloader.com';
+const SENDER_NAME   = 'AVI Downloader';
+
+/* Send email via Brevo HTTP API — uses native fetch (Node 18+), HTTPS only */
+async function sendEmailSafe({ to, subject, html, text, _otp }) {
+  if (!BREVO_API_KEY || BREVO_API_KEY.includes('xxxx')) {
+    console.log('[Email] BREVO_API_KEY not set — OTP for', to, ':', _otp || '(see OTP store)');
+    return false;
+  }
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method : 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept'      : 'application/json',
+        'api-key'     : BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender     : { name: SENDER_NAME, email: SENDER_EMAIL },
+        to         : [{ email: to }],
+        subject,
+        htmlContent: html,
+        textContent: text,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('[Email] Brevo API error:', res.status, body.slice(0, 300));
+      return false;
+    }
+
+    console.log('[Email] Sent via Brevo API to:', to);
+    return true;
+  } catch (err) {
+    console.error('[Email] Brevo API request failed:', err.message);
+    return false;
+  }
+}
 
 /* ── User DB helpers (JSON file) ── */
 function loadUsers() {
@@ -148,7 +192,7 @@ const sendOtp = async (req, res, next) => {
     const otp        = genOtp();
     const hashedPass = await bcrypt.hash(password, SALT_ROUNDS);
 
-    /* Store OTP server-side (not sent to client) */
+    /* Store OTP server-side */
     otpStore.set(cleanEmail, {
       otp,
       expiresAt : Date.now() + OTP_EXPIRY,
@@ -156,27 +200,27 @@ const sendOtp = async (req, res, next) => {
       password  : hashedPass,
     });
 
-    /* Send real email via Gmail */
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
-      to      : cleanEmail,
-      subject : `${otp} is your AVI Downloader verification code`,
-      html    : otpEmailHtml(name.trim(), otp),
-      text    : `Your AVI Downloader OTP is: ${otp}\n\nValid for 10 minutes.\n\nIf you didn't request this, ignore this email.`,
-    });
+    console.log(`[Auth] OTP for ${cleanEmail}: ${otp}`); // always log for debugging
 
-    console.log(`[Auth] OTP sent to ${cleanEmail}`);
-
+    /* ── RESPOND IMMEDIATELY — don't wait for email ── */
     res.json({
       success : true,
       message : `OTP sent to ${cleanEmail}. Check your inbox (and spam folder).`,
     });
+
+    /* Send email in background — if it fails, OTP is still valid in memory */
+    sendEmailSafe({
+      to      : cleanEmail,
+      subject : `${otp} is your AVI Downloader verification code`,
+      html    : otpEmailHtml(name.trim(), otp),
+      text    : `Your AVI Downloader OTP is: ${otp}\n\nValid for 10 minutes.\n\nIf you didn't request this, ignore this email.`,
+      _otp    : otp,
+    });
   } catch (err) {
     console.error('[sendOtp error]', err.message);
-    if (err.code === 'EAUTH')
-      return res.status(500).json({ success: false, error: 'Email configuration error. Check GMAIL_USER and GMAIL_PASS in .env' });
-    next(err);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Server error. Please try again.' });
+    }
   }
 };
 
@@ -256,16 +300,19 @@ const resendOtp = async (req, res, next) => {
     const newOtp = genOtp();
     otpStore.set(cleanEmail, { ...stored, otp: newOtp, expiresAt: Date.now() + OTP_EXPIRY });
 
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
+    console.log(`[Auth] Resend OTP for ${cleanEmail}: ${newOtp}`);
+
+    /* Respond immediately */
+    res.json({ success: true, message: 'New OTP sent to your email.' });
+
+    /* Send email in background */
+    sendEmailSafe({
       to      : cleanEmail,
       subject : `${newOtp} is your new AVI Downloader OTP`,
       html    : otpEmailHtml(stored.name, newOtp),
       text    : `Your new AVI Downloader OTP is: ${newOtp}\n\nValid for 10 minutes.`,
+      _otp    : newOtp,
     });
-
-    res.json({ success: true, message: 'New OTP sent to your email.' });
   } catch (err) {
     next(err);
   }

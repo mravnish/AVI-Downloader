@@ -19,6 +19,9 @@ const submissionsRoutes = require('./routes/submissions');
 const audioRoutes       = require('./routes/audio');
 
 const app  = express();
+
+/* ── Trust Render's reverse proxy (fixes X-Forwarded-For rate-limit error) ── */
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 
 /* ── Security ── */
