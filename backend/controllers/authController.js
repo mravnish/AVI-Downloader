@@ -26,85 +26,14 @@ const SALT_ROUNDS = 10;
 /* ── In-memory OTP store: { email → { otp, expiresAt, name, password } } ── */
 const otpStore = new Map();
 
-/* ── Email transporter — uses Brevo SMTP (free, works on Render) ──
-   Brevo (formerly Sendinblue): free 300 emails/day, no port blocking
-   Set these in Render env vars:
-     BREVO_USER = your Brevo login email
-     BREVO_PASS = your Brevo SMTP key (from Brevo dashboard → SMTP & API)
-   Fallback: Gmail on port 587 (TLS) if Brevo not configured
-── */
-let _transporter = null;
-
-function getTransporter() {
-  if (_transporter) return _transporter;
-
-  /* Option 1: Brevo SMTP (recommended for Render) */
-  const brevoUser = process.env.BREVO_USER;
-  const brevoPass = process.env.BREVO_PASS;
-  if (brevoUser && brevoPass && !brevoPass.includes('xxxx')) {
-    try {
-      _transporter = nodemailer.createTransport({
-        host  : 'smtp-relay.brevo.com',
-        port  : 587,
-        secure: false,
-        auth  : { user: brevoUser, pass: brevoPass },
-        tls   : { rejectUnauthorized: false },
-        connectionTimeout: 20000,
-        greetingTimeout  : 20000,
-        socketTimeout    : 20000,
-      });
-      console.log('[Email] Using Brevo SMTP');
-      return _transporter;
-    } catch (e) {
-      console.error('[Email] Brevo init failed:', e.message);
-      _transporter = null;
-    }
-  }
-
-  /* Option 2: Gmail port 587 (TLS) — may work on some Render regions */
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailPass = process.env.GMAIL_PASS;
-  if (gmailUser && gmailPass && !gmailPass.includes('xxxx')) {
-    try {
-      _transporter = nodemailer.createTransport({
-        host  : 'smtp.gmail.com',
-        port  : 587,
-        secure: false,
-        auth  : { user: gmailUser, pass: gmailPass },
-        tls   : { rejectUnauthorized: false },
-        connectionTimeout: 20000,
-        greetingTimeout  : 20000,
-        socketTimeout    : 20000,
-      });
-      console.log('[Email] Using Gmail SMTP port 587');
-      return _transporter;
-    } catch (e) {
-      console.error('[Email] Gmail init failed:', e.message);
-      _transporter = null;
-    }
-  }
-
-  console.warn('[Email] No email provider configured — OTP logged to console only');
-  return null;
-}
-
-/* Send email safely — NEVER throws, NEVER crashes server */
-async function sendEmailSafe(options) {
-  const t = getTransporter();
-  if (!t) {
-    console.log('[Email] No transporter — OTP for', options.to, ':', options._otp || '(see OTP store)');
-    return false;
-  }
-  try {
-    await t.sendMail(options);
-    console.log('[Email] Sent to:', options.to);
-    return true;
-  } catch (err) {
-    console.error('[Email] Failed:', err.message);
-    _transporter = null; // reset for next attempt
-    return false;
-  }
-}
+/* ── Gmail transporter — FREE unlimited via App Password ── */
+const createTransporter = () => nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,   // your Gmail address
+    pass: process.env.GMAIL_PASS,   // Gmail App Password (16-char, not your login password)
+  },
+});
 
 /* ── User DB helpers (JSON file) ── */
 function loadUsers() {
@@ -219,7 +148,7 @@ const sendOtp = async (req, res, next) => {
     const otp        = genOtp();
     const hashedPass = await bcrypt.hash(password, SALT_ROUNDS);
 
-    /* Store OTP server-side */
+    /* Store OTP server-side (not sent to client) */
     otpStore.set(cleanEmail, {
       otp,
       expiresAt : Date.now() + OTP_EXPIRY,
@@ -227,28 +156,27 @@ const sendOtp = async (req, res, next) => {
       password  : hashedPass,
     });
 
-    console.log(`[Auth] OTP for ${cleanEmail}: ${otp}`); // always log for debugging
-
-    /* ── RESPOND IMMEDIATELY — don't wait for email ── */
-    res.json({
-      success : true,
-      message : `OTP sent to ${cleanEmail}. Check your inbox (and spam folder).`,
-    });
-
-    /* Send email in background — if it fails, OTP is still valid in memory */
-    sendEmailSafe({
+    /* Send real email via Gmail */
+    const transporter = createTransporter();
+    await transporter.sendMail({
       from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
       to      : cleanEmail,
       subject : `${otp} is your AVI Downloader verification code`,
       html    : otpEmailHtml(name.trim(), otp),
       text    : `Your AVI Downloader OTP is: ${otp}\n\nValid for 10 minutes.\n\nIf you didn't request this, ignore this email.`,
-      _otp    : otp,
+    });
+
+    console.log(`[Auth] OTP sent to ${cleanEmail}`);
+
+    res.json({
+      success : true,
+      message : `OTP sent to ${cleanEmail}. Check your inbox (and spam folder).`,
     });
   } catch (err) {
     console.error('[sendOtp error]', err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: 'Server error. Please try again.' });
-    }
+    if (err.code === 'EAUTH')
+      return res.status(500).json({ success: false, error: 'Email configuration error. Check GMAIL_USER and GMAIL_PASS in .env' });
+    next(err);
   }
 };
 
@@ -328,20 +256,16 @@ const resendOtp = async (req, res, next) => {
     const newOtp = genOtp();
     otpStore.set(cleanEmail, { ...stored, otp: newOtp, expiresAt: Date.now() + OTP_EXPIRY });
 
-    console.log(`[Auth] Resend OTP for ${cleanEmail}: ${newOtp}`);
-
-    /* Respond immediately */
-    res.json({ success: true, message: 'New OTP sent to your email.' });
-
-    /* Send email in background */
-    sendEmailSafe({
+    const transporter = createTransporter();
+    await transporter.sendMail({
       from    : `"AVI Downloader" <${process.env.GMAIL_USER}>`,
       to      : cleanEmail,
       subject : `${newOtp} is your new AVI Downloader OTP`,
       html    : otpEmailHtml(stored.name, newOtp),
       text    : `Your new AVI Downloader OTP is: ${newOtp}\n\nValid for 10 minutes.`,
-      _otp    : newOtp,
     });
+
+    res.json({ success: true, message: 'New OTP sent to your email.' });
   } catch (err) {
     next(err);
   }
